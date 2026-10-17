@@ -1,0 +1,4 @@
+*.zip
+*.skill
+ste-writing/references/official/ASD-STE100*
+__pycache__/
