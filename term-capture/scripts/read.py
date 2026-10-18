@@ -14,9 +14,15 @@ import pyte
 MARK = b"\x1b]133;"
 START = re.compile(rb"C;(?:cols=(\d+);)?cmdline=(.*)", re.S)
 END = re.compile(rb"D;(\d+)")
+# A mark ends with BEL or with ST (ESC backslash).
+TERMINATOR = re.compile(rb"\a|\x1b\\")
 ALT_SCREEN = re.compile(rb"\x1b\[\?1049h.*?(\x1b\[\?1049l|$)", re.S)
-# script(1) writes this line at the end of the log.
-SCRIPT_DONE = re.compile(rb"\r?\nScript done on .*", re.S)
+# pyte does not know DCS, SOS, PM, and APC strings (for example the kitty
+# graphics queries of yazi). It shows their content as text. Remove them.
+CONTROL_STRING = re.compile(rb"\x1b[PX^_].*?(?:\x1b\\|\a)", re.S)
+# script(1) writes this line at the end of the log. Match it only there,
+# because a command can also show this text.
+SCRIPT_DONE = re.compile(rb"\r?\nScript done on [^\n]*\n?\Z")
 
 
 class Screen(pyte.Screen):
@@ -27,6 +33,7 @@ class Screen(pyte.Screen):
 
 def render(data, cols):
     data = ALT_SCREEN.sub(b"[full-screen program]\r\n", data)
+    data = CONTROL_STRING.sub(b"", data)
     text = data.decode("utf-8", "replace")
     # Wrapped lines also use rows. Make the screen high enough for all rows.
     screen = Screen(cols, text.count("\n") + len(text) // cols + 2)
@@ -37,23 +44,42 @@ def render(data, cols):
     return lines
 
 
+def show(cmdline, cols, chunks):
+    print("$ " + cmdline.decode("utf-8", "replace"))
+    print(*render(b"".join(chunks), cols), sep="\n")
+
+
 def main():
     with open(sys.argv[1], "rb") as f:
         log = f.read()
     ended = SCRIPT_DONE.search(log) is not None
     log = SCRIPT_DONE.sub(b"", log)
-    running = False
+    # The command that runs now: (cmdline, cols, output chunks).
+    cmd = None
     for part in log.split(MARK)[1:]:
-        head, _, body = part.partition(b"\a")
+        if t := TERMINATOR.search(part):
+            head, body = part[: t.start()], part[t.end() :]
+        else:
+            head, body = part, b""
         if m := START.fullmatch(head):
-            print("$ " + m[2].decode("utf-8", "replace"))
-            print(*render(body, int(m[1] or 200)), sep="\n")
-            running = True
+            if cmd:
+                show(*cmd)
+            cmd = (m[2], int(m[1] or 200), [body])
         elif m := END.fullmatch(head):
-            print(f"[exit {m[1].decode()}]\n")
-            running = False
-    if running and not ended:
-        print("[running]")
+            # Use only the first D mark after a C mark. The shell
+            # integration of the user can write more D marks.
+            if cmd:
+                show(*cmd)
+                print(f"[exit {m[1].decode()}]\n")
+                cmd = None
+        elif cmd:
+            # The shell integration of the user can write more marks
+            # during a command. The text after them is command output.
+            cmd[2].append(body)
+    if cmd:
+        show(*cmd)
+        if not ended:
+            print("[running]")
 
 
 main()

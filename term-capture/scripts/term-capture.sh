@@ -13,6 +13,9 @@
 # COMMAND from stdin. A heredoc with a quoted delimiter needs no quotes or
 # escapes.
 dir=$(dirname "$(readlink -f "$0")")/..
+for cmd in xdg-terminal-exec zsh script; do
+	command -v "$cmd" >/dev/null || { echo "term-capture: $cmd not found" >&2; exit 1; }
+done
 log=$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/claude-shell.XXXXXX.log") || exit 1
 echo "log: $log"
 prefill=${1-}
@@ -23,6 +26,10 @@ setsid xdg-terminal-exec -- env CLAUDE_SHELL_LOG="$log" CLAUDE_SHELL_ORIG_ZDOTDI
 	>/dev/null 2>&1 </dev/null &
 # Wait until script(1) starts (20 seconds maximum).
 for ((i = 0; i < 20; i++)); do pgrep -f "script -qf $log" >/dev/null && break; sleep 1; done
+if ((i == 20)); then
+	echo "term-capture: the terminal window did not open" >&2
+	exit 1
+fi
 # Wait until the user closes the window.
 while pgrep -f "script -qf $log" >/dev/null; do sleep 1; done
 "$dir/scripts/read.py" "$log"
